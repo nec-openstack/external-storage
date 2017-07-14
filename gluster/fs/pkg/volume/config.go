@@ -16,20 +16,17 @@ limitations under the License.
 
 package volume
 
-import "strings"
+import (
+	"fmt"
+	"strings"
+)
 
 // ProvisionerConfig provisioner config for Provision Volume
 type ProvisionerConfig struct {
+	Namespace      string
+	LabelSelector  string
 	BrickRootPaths []string
 	VolumeType     string
-}
-
-type validateError struct {
-	reason string
-}
-
-func (error *validateError) Error() string {
-	return error.reason
 }
 
 // NewProvisionerConfig create ProvisionerConfig from parameters of StorageClass
@@ -38,17 +35,25 @@ func NewProvisionerConfig(params map[string]string) (*ProvisionerConfig, error) 
 
 	// Set default volume type
 	volumeType := ""
+	namespace := "default"
+	selector := "glusterfs-node==pod"
 	var brickRootPaths []string
 
 	for k, v := range params {
 		switch strings.ToLower(k) {
 		case "brickrootpaths":
 			brickRootPaths = parseBrickRootPaths(v)
+		case "namespace":
+			namespace = strings.TrimSpace(v)
+		case "selector":
+			selector = strings.TrimSpace(v)
 		}
 	}
 
 	config.BrickRootPaths = brickRootPaths
 	config.VolumeType = volumeType
+	config.Namespace = namespace
+	config.LabelSelector = selector
 
 	err := config.validate()
 	if err != nil {
@@ -69,7 +74,7 @@ func parseBrickRootPaths(param string) []string {
 
 func (config *ProvisionerConfig) validate() error {
 	if len(config.BrickRootPaths) == 0 {
-		return &validateError{reason: "brickRootPaths are not specified"}
+		return fmt.Errorf("brickRootPaths are not specified")
 	}
 
 	return nil
