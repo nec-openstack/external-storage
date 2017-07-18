@@ -17,6 +17,9 @@ limitations under the License.
 package volume
 
 import (
+	"fmt"
+	"path/filepath"
+
 	"github.com/golang/glog"
 	"github.com/kubernetes-incubator/external-storage/lib/controller"
 	"k8s.io/apimachinery/pkg/types"
@@ -64,9 +67,62 @@ type glusterfsProvisioner struct {
 var _ controller.Provisioner = &glusterfsProvisioner{}
 
 func (p *glusterfsProvisioner) Provision(options controller.VolumeOptions) (*v1.PersistentVolume, error) {
+	if options.PVC.Spec.Selector != nil {
+		return nil, fmt.Errorf("claim Selector is not supported")
+	}
 	glog.V(4).Infof("Start Provisioning volume: VolumeOptions %v", options)
 
-	p.ExecuteCommands([]string{"hostname"}, &ProvisionerConfig{LabelSelector: "glusterfs-node==pod"})
+	pvcNamespace := options.PVC.Namespace
+	pvcName := options.PVC.Name
+	cfg, err := NewProvisionerConfig(options.Parameters)
+	if err != nil {
+		return nil, fmt.Errorf("Parameter is invalid: %s", err)
+	}
+
+	vol, err := p.createVolume(pvcNamespace, pvcName, cfg)
+	if err != nil {
+		return nil, err
+	}
+
+	return nil, fmt.Errorf("Test provision is faild %v", vol)
+}
+
+func (p *glusterfsProvisioner) createVolume(
+	namespace string, name string, cfg *ProvisionerConfig) (*glusterVolume, error) {
+	var err error
+
+	err = p.createBricks(namespace, name, cfg)
+	if err != nil {
+		glog.Errorf("Creating bricks is failed: %s,%s", namespace, name)
+		return nil, err
+	}
 
 	return nil, nil
+}
+
+func (p *glusterfsProvisioner) createBricks(
+	namespace string, name string, cfg *ProvisionerConfig) error {
+	var commands []string
+
+	for _, brick := range cfg.BrickRootPaths {
+		host := brick.Host
+		parentDir := filepath.Join(brick.Path, namespace)
+		path := filepath.Join(parentDir, name)
+
+		glog.Infof("mkdir -p %s:%s", host, path)
+		commands = []string{
+			// Create parent directory
+			fmt.Sprintf("mkdir -p %s", parentDir),
+			// Run mkdir (if path is already existed then this command will fail)
+			fmt.Sprintf("mkdir %s", path),
+			// TODO: Assign GID
+		}
+		err := p.ExecuteCommands(host, commands, cfg)
+		if err != nil {
+			// TODO: Cleanup created directories if commands failed
+			return err
+		}
+	}
+
+	return nil
 }

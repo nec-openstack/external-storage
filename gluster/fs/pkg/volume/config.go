@@ -21,28 +21,38 @@ import (
 	"strings"
 )
 
+// BrickRootPath is root path of brick for each Gluster Host
+type BrickRootPath struct {
+	Host string
+	Path string
+}
+
 // ProvisionerConfig provisioner config for Provision Volume
 type ProvisionerConfig struct {
 	Namespace      string
 	LabelSelector  string
-	BrickRootPaths []string
+	BrickRootPaths []BrickRootPath
 	VolumeType     string
 }
 
 // NewProvisionerConfig create ProvisionerConfig from parameters of StorageClass
 func NewProvisionerConfig(params map[string]string) (*ProvisionerConfig, error) {
 	var config ProvisionerConfig
+	var err error
 
 	// Set default volume type
 	volumeType := ""
 	namespace := "default"
 	selector := "glusterfs-node==pod"
-	var brickRootPaths []string
+	var brickRootPaths []BrickRootPath
 
 	for k, v := range params {
 		switch strings.ToLower(k) {
 		case "brickrootpaths":
-			brickRootPaths = parseBrickRootPaths(v)
+			brickRootPaths, err = parseBrickRootPaths(v)
+			if err != nil {
+				return nil, err
+			}
 		case "namespace":
 			namespace = strings.TrimSpace(v)
 		case "selector":
@@ -55,7 +65,7 @@ func NewProvisionerConfig(params map[string]string) (*ProvisionerConfig, error) 
 	config.Namespace = namespace
 	config.LabelSelector = selector
 
-	err := config.validate()
+	err = config.validate()
 	if err != nil {
 		return nil, err
 	}
@@ -63,13 +73,22 @@ func NewProvisionerConfig(params map[string]string) (*ProvisionerConfig, error) 
 	return &config, nil
 }
 
-func parseBrickRootPaths(param string) []string {
-	brickRootPaths := strings.Split(param, ",")
-	for i, path := range brickRootPaths {
-		brickRootPaths[i] = strings.TrimSpace(path)
+func parseBrickRootPaths(param string) ([]BrickRootPath, error) {
+	pairs := strings.Split(param, ",")
+	brickRootPaths := []BrickRootPath{}
+	for _, path := range pairs {
+		path = strings.TrimSpace(path)
+		rawBrickPath := strings.Split(path, ":")
+		if len(rawBrickPath) < 2 {
+			return nil, fmt.Errorf("BrickRootPath is invalid (format is `host:/path/to/root,host2:/path/to/root2`): %s", param)
+		}
+		brickRootPaths = append(brickRootPaths, BrickRootPath{
+			Host: rawBrickPath[0],
+			Path: rawBrickPath[1],
+		})
 	}
 
-	return brickRootPaths
+	return brickRootPaths, nil
 }
 
 func (config *ProvisionerConfig) validate() error {

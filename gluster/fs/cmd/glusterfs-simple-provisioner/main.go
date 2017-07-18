@@ -25,6 +25,7 @@ import (
 	"github.com/kubernetes-incubator/external-storage/lib/controller"
 	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/apimachinery/pkg/util/validation/field"
+	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
@@ -65,16 +66,21 @@ func main() {
 
 	// The controller needs to know what the server version is because out-of-tree
 	// provisioners aren't officially supported until 1.5
-	// serverVersion, err := clientset.Discovery().ServerVersion()
-	// if err != nil {
-	// 	glog.Fatalf("Error getting server version: %v", err)
-	// }
+	serverVersion, err := clientset.Discovery().ServerVersion()
+	if err != nil {
+		glog.Fatalf("Error getting server version: %v", err)
+	}
 
 	glusterfsProvisioner := vol.NewGlusterfsProvisioner(config, clientset)
-	_, err = glusterfsProvisioner.Provision(controller.VolumeOptions{})
-	if err != nil {
-		glog.Fatalf("Failed to Provision: %v", err)
-	}
+
+	pc := controller.NewProvisionController(
+		clientset,
+		*provisioner,
+		glusterfsProvisioner,
+		serverVersion.GitVersion,
+	)
+
+	pc.Run(wait.NeverStop)
 }
 
 // validateProvisioner tests if provisioner is a valid qualified name.

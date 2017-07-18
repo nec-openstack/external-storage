@@ -27,10 +27,11 @@ import (
 	"k8s.io/client-go/tools/remotecommand"
 )
 
-func (p *glusterfsProvisioner) ExecuteCommands(commands []string,
+func (p *glusterfsProvisioner) ExecuteCommands(host string,
+	commands []string,
 	config *ProvisionerConfig) error {
 
-	pod, err := p.selectPod(config)
+	pod, err := p.selectPod(host, config)
 	if err != nil {
 		return err
 	}
@@ -47,6 +48,7 @@ func (p *glusterfsProvisioner) ExecuteCommands(commands []string,
 func (p *glusterfsProvisioner) ExecuteCommand(
 	command string,
 	pod *v1.Pod) error {
+	glog.V(4).Infof("Pod: %s, ExecuteCommand: %s", pod.Name, command)
 
 	containerName := pod.Spec.Containers[0].Name
 	req := p.restClient.Post().
@@ -77,18 +79,20 @@ func (p *glusterfsProvisioner) ExecuteCommand(
 		Stderr:             &berr,
 		Tty:                false,
 	})
-	if err != nil {
-		glog.Fatalf("Failed to create Stream: %v", err)
-		return err
-	}
 
 	glog.Infof("Result: %v", b.String())
 	glog.Infof("Result: %v", berr.String())
+	if err != nil {
+		glog.Errorf("Failed to create Stream: %v", err)
+		return err
+	}
 
 	return nil
 }
 
-func (p *glusterfsProvisioner) selectPod(config *ProvisionerConfig) (*v1.Pod, error) {
+func (p *glusterfsProvisioner) selectPod(host string,
+	config *ProvisionerConfig) (*v1.Pod, error) {
+
 	podList, err := p.client.Core().
 		Pods(config.Namespace).
 		List(meta_v1.ListOptions{
@@ -101,10 +105,12 @@ func (p *glusterfsProvisioner) selectPod(config *ProvisionerConfig) (*v1.Pod, er
 	if len(pods) == 0 {
 		return nil, fmt.Errorf("No pods found for glusterfs, LabelSelector: %v", config.LabelSelector)
 	}
-	glog.Infof("%v pods are available\n", len(pods))
-	// TODO(yuanying): Select best pod to execute
-	pod := &pods[0]
-	glog.Infof("Pod selecterd: %v/%v\n", pod.Namespace, pod.Name)
+	for _, pod := range pods {
+		if pod.Spec.NodeName == host {
+			glog.Infof("Pod selecterd: %v/%v\n", pod.Namespace, pod.Name)
+			return &pod, nil
+		}
+	}
 
-	return pod, nil
+	return nil, fmt.Errorf("No pod found to match NodeName == %s", host)
 }
