@@ -29,6 +29,7 @@ type BrickRootPath struct {
 
 // ProvisionerConfig provisioner config for Provision Volume
 type ProvisionerConfig struct {
+	ForceCreate    bool
 	Namespace      string
 	LabelSelector  string
 	BrickRootPaths []BrickRootPath
@@ -41,6 +42,7 @@ func NewProvisionerConfig(params map[string]string) (*ProvisionerConfig, error) 
 	var err error
 
 	// Set default volume type
+	forceCreate := false
 	volumeType := ""
 	namespace := "default"
 	selector := "glusterfs-node==pod"
@@ -57,6 +59,8 @@ func NewProvisionerConfig(params map[string]string) (*ProvisionerConfig, error) 
 			namespace = strings.TrimSpace(v)
 		case "selector":
 			selector = strings.TrimSpace(v)
+		case "forcecreate":
+			forceCreate = strings.ToLower(v) == "true"
 		}
 	}
 
@@ -64,6 +68,7 @@ func NewProvisionerConfig(params map[string]string) (*ProvisionerConfig, error) 
 	config.VolumeType = volumeType
 	config.Namespace = namespace
 	config.LabelSelector = selector
+	config.ForceCreate = forceCreate
 
 	err = config.validate()
 	if err != nil {

@@ -110,11 +110,15 @@ func (p *glusterfsProvisioner) createBricks(
 		path := filepath.Join(parentDir, name)
 
 		glog.Infof("mkdir -p %s:%s", host, path)
+		mkdirOpt := ""
+		if cfg.ForceCreate == true {
+			mkdirOpt = "-p"
+		}
 		commands = []string{
 			// Create parent directory
 			fmt.Sprintf("mkdir -p %s", parentDir),
 			// Run mkdir (if path is already existed then this command will fail)
-			fmt.Sprintf("mkdir %s", path),
+			fmt.Sprintf("mkdir %s %s", mkdirOpt, path),
 			// TODO: Assign GID
 		}
 		err := p.ExecuteCommands(host, commands, cfg)
