@@ -34,7 +34,7 @@ const (
 	// are we allowed to set this? else make up our own
 	annCreatedBy       = "kubernetes.io/createdby"
 	createdBy          = "glusterfs-simple-provisioner"
-	dynamicEpSvcPrefix = "glusterfs-dynamic-"
+	dynamicEpSvcPrefix = "glusterfs-simple-"
 
 	// A PV annotation for the identity of the s3fsProvisioner that provisioned it
 	annProvisionerID = "Provisioner_Id"
