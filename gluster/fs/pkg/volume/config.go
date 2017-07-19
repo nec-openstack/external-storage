@@ -19,6 +19,8 @@ package volume
 import (
 	"fmt"
 	"strings"
+
+	"github.com/kubernetes-incubator/external-storage/lib/controller"
 )
 
 // BrickRootPath is root path of brick for each Gluster Host
@@ -33,11 +35,13 @@ type ProvisionerConfig struct {
 	Namespace      string
 	LabelSelector  string
 	BrickRootPaths []BrickRootPath
+	VolumeName     string
 	VolumeType     string
 }
 
 // NewProvisionerConfig create ProvisionerConfig from parameters of StorageClass
-func NewProvisionerConfig(params map[string]string) (*ProvisionerConfig, error) {
+func NewProvisionerConfig(options controller.VolumeOptions) (*ProvisionerConfig, error) {
+	params := options.Parameters
 	var config ProvisionerConfig
 	var err error
 
@@ -65,6 +69,7 @@ func NewProvisionerConfig(params map[string]string) (*ProvisionerConfig, error) 
 	}
 
 	config.BrickRootPaths = brickRootPaths
+	config.VolumeName = options.PVName
 	config.VolumeType = volumeType
 	config.Namespace = namespace
 	config.LabelSelector = selector
@@ -80,17 +85,15 @@ func NewProvisionerConfig(params map[string]string) (*ProvisionerConfig, error) 
 
 func parseBrickRootPaths(param string) ([]BrickRootPath, error) {
 	pairs := strings.Split(param, ",")
-	brickRootPaths := []BrickRootPath{}
-	for _, path := range pairs {
+	brickRootPaths := make([]BrickRootPath, len(pairs))
+	for i, path := range pairs {
 		path = strings.TrimSpace(path)
 		rawBrickPath := strings.Split(path, ":")
 		if len(rawBrickPath) < 2 {
 			return nil, fmt.Errorf("BrickRootPath is invalid (format is `host:/path/to/root,host2:/path/to/root2`): %s", param)
 		}
-		brickRootPaths = append(brickRootPaths, BrickRootPath{
-			Host: rawBrickPath[0],
-			Path: rawBrickPath[1],
-		})
+		brickRootPaths[i].Host = rawBrickPath[0]
+		brickRootPaths[i].Path = rawBrickPath[1]
 	}
 
 	return brickRootPaths, nil

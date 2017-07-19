@@ -22,6 +22,8 @@ import (
 
 	"github.com/golang/glog"
 	"github.com/kubernetes-incubator/external-storage/lib/controller"
+	"k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/pkg/api/v1"
@@ -30,8 +32,9 @@ import (
 
 const (
 	// are we allowed to set this? else make up our own
-	annCreatedBy = "kubernetes.io/createdby"
-	createdBy    = "glusterfs-simple-provisioner"
+	annCreatedBy       = "kubernetes.io/createdby"
+	createdBy          = "glusterfs-simple-provisioner"
+	dynamicEpSvcPrefix = "glusterfs-dynamic-"
 
 	// A PV annotation for the identity of the s3fsProvisioner that provisioned it
 	annProvisionerID = "Provisioner_Id"
@@ -64,6 +67,11 @@ type glusterfsProvisioner struct {
 	identity   types.UID
 }
 
+type glusterBrick struct {
+	Host string
+	Path string
+}
+
 var _ controller.Provisioner = &glusterfsProvisioner{}
 
 func (p *glusterfsProvisioner) Provision(options controller.VolumeOptions) (*v1.PersistentVolume, error) {
@@ -74,59 +82,195 @@ func (p *glusterfsProvisioner) Provision(options controller.VolumeOptions) (*v1.
 
 	pvcNamespace := options.PVC.Namespace
 	pvcName := options.PVC.Name
-	cfg, err := NewProvisionerConfig(options.Parameters)
+	cfg, err := NewProvisionerConfig(options)
 	if err != nil {
 		return nil, fmt.Errorf("Parameter is invalid: %s", err)
 	}
 
-	vol, err := p.createVolume(pvcNamespace, pvcName, cfg)
+	r, err := p.createVolume(pvcNamespace, pvcName, cfg)
 	if err != nil {
 		return nil, err
 	}
 
-	return nil, fmt.Errorf("Test provision is faild %v", vol)
+	pv := &v1.PersistentVolume{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: options.PVName,
+		},
+		Spec: v1.PersistentVolumeSpec{
+			PersistentVolumeReclaimPolicy: options.PersistentVolumeReclaimPolicy,
+			AccessModes:                   options.PVC.Spec.AccessModes,
+			Capacity: v1.ResourceList{
+				v1.ResourceName(v1.ResourceStorage): options.PVC.Spec.Resources.Requests[v1.ResourceName(v1.ResourceStorage)],
+			},
+			PersistentVolumeSource: v1.PersistentVolumeSource{
+				Glusterfs: r,
+			},
+		},
+	}
+	return pv, nil
+}
+
+func (p *glusterfsProvisioner) getClusterNodes(cfg *ProvisionerConfig) []string {
+	// XXX: Improve to get all cluster nodes
+	nodes := make([]string, len(cfg.BrickRootPaths))
+	for i, root := range cfg.BrickRootPaths {
+		nodes[i] = root.Host
+	}
+	return nodes
 }
 
 func (p *glusterfsProvisioner) createVolume(
-	namespace string, name string, cfg *ProvisionerConfig) (*glusterVolume, error) {
+	namespace string, name string, cfg *ProvisionerConfig) (*v1.GlusterfsVolumeSource, error) {
 	var err error
+	var bricks []glusterBrick
 
-	err = p.createBricks(namespace, name, cfg)
+	bricks, err = p.createBricks(namespace, name, cfg)
 	if err != nil {
 		glog.Errorf("Creating bricks is failed: %s,%s", namespace, name)
 		return nil, err
 	}
 
-	return nil, nil
+	cmd := fmt.Sprintf(
+		"gluster --mode=script volume create %s %s", cfg.VolumeName, cfg.VolumeType,
+	)
+	for _, b := range bricks {
+		cmd += fmt.Sprintf(" %s:%s", b.Host, b.Path)
+	}
+	if cfg.ForceCreate {
+		cmd += " force"
+	}
+
+	cmds := []string{
+		cmd,
+		fmt.Sprintf("gluster --mode=script volume start %s", cfg.VolumeName),
+	}
+	// XXX: Fix this simple host determination
+	host := bricks[0].Host
+
+	// Create and Start gluster volume
+	p.ExecuteCommands(host, cmds, cfg)
+
+	epServiceName := dynamicEpSvcPrefix + name
+	epNamespace := namespace
+	dynamicHostIps := p.getClusterNodes(cfg)
+	endpoint, service, err := p.createEndpointService(epNamespace, epServiceName, dynamicHostIps, name)
+	if err != nil {
+		glog.Errorf("glusterfs: failed to create endpoint/service: %v", err)
+		// TODO: delete volume if failed
+		// deleteErr := cli.VolumeDelete(volume.Id)
+		// if deleteErr != nil {
+		// 	glog.Errorf("glusterfs: error when deleting the volume :%v , manual deletion required", deleteErr)
+		// }
+		return nil, fmt.Errorf("failed to create endpoint/service %v", err)
+	}
+	glog.V(3).Infof("glusterfs: dynamic ep %v and svc : %v ", endpoint, service)
+
+	return &v1.GlusterfsVolumeSource{
+		EndpointsName: endpoint.Name,
+		Path:          cfg.VolumeName,
+		ReadOnly:      false,
+	}, nil
 }
 
 func (p *glusterfsProvisioner) createBricks(
-	namespace string, name string, cfg *ProvisionerConfig) error {
-	var commands []string
+	namespace string, name string, cfg *ProvisionerConfig) ([]glusterBrick, error) {
+	var cmds []string
+	bricks := make([]glusterBrick, len(cfg.BrickRootPaths))
 
-	for _, brick := range cfg.BrickRootPaths {
-		host := brick.Host
-		parentDir := filepath.Join(brick.Path, namespace)
+	for i, root := range cfg.BrickRootPaths {
+		host := root.Host
+		parentDir := filepath.Join(root.Path, namespace)
 		path := filepath.Join(parentDir, name)
+		bricks[i].Host = host
+		bricks[i].Path = path
 
 		glog.Infof("mkdir -p %s:%s", host, path)
 		mkdirOpt := ""
 		if cfg.ForceCreate == true {
 			mkdirOpt = "-p"
 		}
-		commands = []string{
+		cmds = []string{
 			// Create parent directory
 			fmt.Sprintf("mkdir -p %s", parentDir),
 			// Run mkdir (if path is already existed then this command will fail)
 			fmt.Sprintf("mkdir %s %s", mkdirOpt, path),
 			// TODO: Assign GID
 		}
-		err := p.ExecuteCommands(host, commands, cfg)
+		err := p.ExecuteCommands(host, cmds, cfg)
 		if err != nil {
 			// TODO: Cleanup created directories if commands failed
-			return err
+			return nil, err
 		}
 	}
 
+	return bricks, nil
+}
+
+func (p *glusterfsProvisioner) createEndpointService(namespace string, epServiceName string, hostips []string, pvcname string) (endpoint *v1.Endpoints, service *v1.Service, err error) {
+
+	addrlist := make([]v1.EndpointAddress, len(hostips))
+	for i, v := range hostips {
+		addrlist[i].IP = v
+	}
+	endpoint = &v1.Endpoints{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: namespace,
+			Name:      epServiceName,
+			Labels: map[string]string{
+				"gluster.kubernetes.io/provisioned-for-pvc": pvcname,
+			},
+		},
+		Subsets: []v1.EndpointSubset{{
+			Addresses: addrlist,
+			Ports:     []v1.EndpointPort{{Port: 1, Protocol: "TCP"}},
+		}},
+	}
+	kubeClient := p.client
+	if kubeClient == nil {
+		return nil, nil, fmt.Errorf("glusterfs: failed to get kube client when creating endpoint service")
+	}
+	_, err = kubeClient.Core().Endpoints(namespace).Create(endpoint)
+	if err != nil && errors.IsAlreadyExists(err) {
+		glog.V(1).Infof("glusterfs: endpoint [%s] already exist in namespace [%s]", endpoint, namespace)
+		err = nil
+	}
+	if err != nil {
+		glog.Errorf("glusterfs: failed to create endpoint: %v", err)
+		return nil, nil, fmt.Errorf("error creating endpoint: %v", err)
+	}
+	service = &v1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      epServiceName,
+			Namespace: namespace,
+			Labels: map[string]string{
+				"gluster.kubernetes.io/provisioned-for-pvc": pvcname,
+			},
+		},
+		Spec: v1.ServiceSpec{
+			Ports: []v1.ServicePort{
+				{Protocol: "TCP", Port: 1}}}}
+	_, err = kubeClient.Core().Services(namespace).Create(service)
+	if err != nil && errors.IsAlreadyExists(err) {
+		glog.V(1).Infof("glusterfs: service [%s] already exist in namespace [%s]", service, namespace)
+		err = nil
+	}
+	if err != nil {
+		glog.Errorf("glusterfs: failed to create service: %v", err)
+		return nil, nil, fmt.Errorf("error creating service: %v", err)
+	}
+	return endpoint, service, nil
+}
+
+func (p *glusterfsProvisioner) deleteEndpointService(namespace string, epServiceName string) (err error) {
+	kubeClient := p.client
+	if kubeClient == nil {
+		return fmt.Errorf("glusterfs: failed to get kube client when deleting endpoint service")
+	}
+	err = kubeClient.Core().Services(namespace).Delete(epServiceName, nil)
+	if err != nil {
+		glog.Errorf("glusterfs: error deleting service %s/%s: %v", namespace, epServiceName, err)
+		return fmt.Errorf("error deleting service %s/%s: %v", namespace, epServiceName, err)
+	}
+	glog.V(1).Infof("glusterfs: service/endpoint %s/%s deleted successfully", namespace, epServiceName)
 	return nil
 }
