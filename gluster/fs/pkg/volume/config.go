@@ -19,8 +19,6 @@ package volume
 import (
 	"fmt"
 	"strings"
-
-	"github.com/kubernetes-incubator/external-storage/lib/controller"
 )
 
 // BrickRootPath is root path of brick for each Gluster Host
@@ -40,8 +38,7 @@ type ProvisionerConfig struct {
 }
 
 // NewProvisionerConfig create ProvisionerConfig from parameters of StorageClass
-func NewProvisionerConfig(options controller.VolumeOptions) (*ProvisionerConfig, error) {
-	params := options.Parameters
+func NewProvisionerConfig(pvName string, params map[string]string) (*ProvisionerConfig, error) {
 	var config ProvisionerConfig
 	var err error
 
@@ -69,7 +66,7 @@ func NewProvisionerConfig(options controller.VolumeOptions) (*ProvisionerConfig,
 	}
 
 	config.BrickRootPaths = brickRootPaths
-	config.VolumeName = options.PVName
+	config.VolumeName = pvName
 	config.VolumeType = volumeType
 	config.Namespace = namespace
 	config.LabelSelector = selector

@@ -82,7 +82,7 @@ func (p *glusterfsProvisioner) Provision(options controller.VolumeOptions) (*v1.
 
 	pvcNamespace := options.PVC.Namespace
 	pvcName := options.PVC.Name
-	cfg, err := NewProvisionerConfig(options)
+	cfg, err := NewProvisionerConfig(options.PVName, options.Parameters)
 	if err != nil {
 		return nil, fmt.Errorf("Parameter is invalid: %s", err)
 	}
@@ -179,21 +179,13 @@ func (p *glusterfsProvisioner) createBricks(
 
 	for i, root := range cfg.BrickRootPaths {
 		host := root.Host
-		parentDir := filepath.Join(root.Path, namespace)
-		path := filepath.Join(parentDir, name)
+		path := filepath.Join(root.Path, namespace, name)
 		bricks[i].Host = host
 		bricks[i].Path = path
 
 		glog.Infof("mkdir -p %s:%s", host, path)
-		mkdirOpt := ""
-		if cfg.ForceCreate == true {
-			mkdirOpt = "-p"
-		}
 		cmds = []string{
-			// Create parent directory
-			fmt.Sprintf("mkdir -p %s", parentDir),
-			// Run mkdir (if path is already existed then this command will fail)
-			fmt.Sprintf("mkdir %s %s", mkdirOpt, path),
+			fmt.Sprintf("mkdir -p %s", path),
 			// TODO: Assign GID
 		}
 		err := p.ExecuteCommands(host, cmds, cfg)
@@ -259,18 +251,4 @@ func (p *glusterfsProvisioner) createEndpointService(namespace string, epService
 		return nil, nil, fmt.Errorf("error creating service: %v", err)
 	}
 	return endpoint, service, nil
-}
-
-func (p *glusterfsProvisioner) deleteEndpointService(namespace string, epServiceName string) (err error) {
-	kubeClient := p.client
-	if kubeClient == nil {
-		return fmt.Errorf("glusterfs: failed to get kube client when deleting endpoint service")
-	}
-	err = kubeClient.Core().Services(namespace).Delete(epServiceName, nil)
-	if err != nil {
-		glog.Errorf("glusterfs: error deleting service %s/%s: %v", namespace, epServiceName, err)
-		return fmt.Errorf("error deleting service %s/%s: %v", namespace, epServiceName, err)
-	}
-	glog.V(1).Infof("glusterfs: service/endpoint %s/%s deleted successfully", namespace, epServiceName)
-	return nil
 }
